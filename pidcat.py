@@ -20,14 +20,16 @@ limitations under the License.
 # Originally written by Jeff Sharkey, http://jsharkey.org/
 # Piping detection and popen() added by other Android team members
 # Package filtering and output improvements by Jake Wharton, http://jakewharton.com
+# Script updated to python3 and includes timestamps along with regex
 
 import argparse
+import os
 import sys
 import re
 import subprocess
 from subprocess import PIPE
 
-__version__ = '2.1.0'
+__version__ = '3.1.0'
 
 LOG_LEVELS = 'VDIWEF'
 LOG_LEVELS_MAP = dict([(LOG_LEVELS[i], i) for i in range(len(LOG_LEVELS))])
@@ -46,6 +48,7 @@ parser.add_argument('-t', '--tag', dest='tag', action='append', help='Filter out
 parser.add_argument('-i', '--ignore-tag', dest='ignored_tag', action='append', help='Filter output by ignoring specified tag(s)')
 parser.add_argument('-v', '--version', action='version', version='%(prog)s ' + __version__, help='Print the version number and exit')
 parser.add_argument('-a', '--all', dest='all', action='store_true', default=False, help='Print all log messages')
+parser.add_argument('-r' '--regex', rest='regex', type=str, help='Print only when matches REGEX and REGEX is regular expression')
 
 args = parser.parse_args()
 min_level = LOG_LEVELS_MAP[args.min_level.upper()]
@@ -63,7 +66,12 @@ if args.use_emulator:
 if args.current_app:
   system_dump_command = base_adb_command + ["shell", "dumpsys", "activity", "activities"]
   system_dump = subprocess.Popen(system_dump_command, stdout=PIPE, stderr=PIPE).communicate()[0]
-  running_package_name = re.search(".*TaskRecord.*A[= ]([^ ^}]*)", str(system_dump)).group(1)
+  pattern_match = b"visibleRequested=true"
+  running_package_name = None
+  for line in system_dump.splitlines():
+    if pattern_match in line:
+      running_package_name = line
+  running_package_name = re.search(".*Task.*(A|I)[= ][^:]*.([^ ^}]*)", str(running_package_name)).group(2)
   package.append(running_package_name)
 
 if len(package) == 0:
@@ -77,14 +85,16 @@ named_processes = list(filter(lambda package: package.find(":") != -1, package))
 named_processes = map(lambda package: package if package.find(":") != len(package) - 1 else package[:-1], named_processes)
 
 header_size = args.tag_width + 1 + 3 + 1 # space, level, space
+header_size += 12 + 1 # time, space
 
 stdout_isatty = sys.stdout.isatty()
 
 width = -1
 try:
   # Get the current terminal width
-  import fcntl, termios, struct
-  h, width = struct.unpack('hh', fcntl.ioctl(0, termios.TIOCGWINSZ, struct.pack('hh', 0, 0)))
+  #import fcntl, termios, struct
+  #h, width = struct.unpack('hh', fcntl.ioctl(0, termios.TIOCGWINSZ, struct.pack('hh', 0, 0)))
+  width, h = os.get_terminal_size()
 except:
   pass
 
@@ -112,7 +122,7 @@ def indent_wrap(message):
     next = min(current + wrap_area, len(message))
     messagebuf += message[current:next]
     if next < len(message):
-      messagebuf += '\n'
+      messagebuf += '\r\n'
       messagebuf += ' ' * header_size
     current = next
   return messagebuf
@@ -173,13 +183,15 @@ PID_START_DALVIK = re.compile(r'^E/dalvikvm\(\s*(\d+)\): >>>>> ([a-zA-Z0-9._:]+)
 PID_KILL  = re.compile(r'^Killing (\d+):([a-zA-Z0-9._:]+)/[^:]+: (.*)$')
 PID_LEAVE = re.compile(r'^No longer want ([a-zA-Z0-9._:]+) \(pid (\d+)\): .*$')
 PID_DEATH = re.compile(r'^Process ([a-zA-Z0-9._:]+) \(pid (\d+)\) has died.?$')
-LOG_LINE  = re.compile(r'^([A-Z])/(.+?)\( *(\d+)\): (.*?)$')
+LOG_LINE  = re.compile(r'^[0-9-]+ ([0-9:.]+) ([A-Z])/(.+?)\( *(\d+)\): (.*?)$')
 BUG_LINE  = re.compile(r'.*nativeGetEnabledTags.*')
 BACKTRACE_LINE = re.compile(r'^#(.*?)pc\s(.*?)$')
 
 adb_command = base_adb_command[:]
 adb_command.append('logcat')
-adb_command.extend(['-v', 'brief'])
+adb_command.extend(['-v', 'time'])
+if args.regex:
+  adb_command.extend(['-e', args.regex])
 
 # Clear log before starting logcat
 if args.clear_logcat:
@@ -288,7 +300,7 @@ while adb.poll() is None:
   if log_line is None:
     continue
 
-  level, tag, owner, message = log_line.groups()
+  time, level, tag, owner, message = log_line.groups()
   tag = tag.strip()
   start = parse_start_proc(line)
   if start:
@@ -352,6 +364,7 @@ while adb.poll() is None:
   else:
     linebuf += ' ' + level + ' '
   linebuf += ' '
+  linebuf = time + ' ' + linebuf
 
   # format tag message using rules
   for matcher in RULES:
@@ -359,4 +372,5 @@ while adb.poll() is None:
     message = matcher.sub(replace, message)
 
   linebuf += indent_wrap(message)
-  print(linebuf.encode('utf-8'))
+  linebuf += '\r'
+  print(linebuf)

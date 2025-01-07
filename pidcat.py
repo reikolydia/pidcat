@@ -23,35 +23,42 @@ limitations under the License.
 
 import argparse
 import os
+import signal
 import sys
 import re
 import textwrap
 import subprocess
 from subprocess import PIPE
 
-__version__ = '3.1.0'
+__version__ = '3.1.1'
 
 LOG_LEVELS = 'VDIWEF'
 LOG_LEVELS_MAP = dict([(LOG_LEVELS[i], i) for i in range(len(LOG_LEVELS))])
-parser = argparse.ArgumentParser(description='Filter logcat by package name')
+#BUFFER = ['radio', 'events', 'main', 'system', 'crash', 'all', 'default']
+formatter = lambda prog: argparse.HelpFormatter(prog,max_help_position=60)
+parser = argparse.ArgumentParser(formatter_class=formatter,description='Advanced ADB logcat filter')
+#parser = argparse.ArgumentParser(description='Filter logcat by package name')
 parser.add_argument('package', nargs='*', help='Application package name(s)')
 parser.add_argument('-w', '--tag-width', metavar='N', dest='tag_width', type=int, default=20, help='Width of log tag')
-parser.add_argument('-l', '--min-level', dest='min_level', type=str, choices=LOG_LEVELS+LOG_LEVELS.lower(), default='V', help='Minimum log level to be displayed')
+parser.add_argument('-l', '--min-level', dest='min_level', type=str, choices=LOG_LEVELS, default='V', help='Minimum log level to be displayed')
 parser.add_argument('--color-gc', dest='color_gc', action='store_true', help='Color garbage collection')
-parser.add_argument('--always-display-tags', dest='always_tags', action='store_true',help='Always display the tag name')
+parser.add_argument('--always-display-tags', dest='always_tags', action='store_true', help='Always display the tag name')
 parser.add_argument('--current', dest='current_app', action='store_true',help='Filter logcat by current running app')
 parser.add_argument('-s', '--serial', dest='device_serial', help='Device serial number (adb -s option)')
 parser.add_argument('-d', '--device', dest='use_device', action='store_true', help='Use first device for log input (adb -d option)')
 parser.add_argument('-e', '--emulator', dest='use_emulator', action='store_true', help='Use first emulator for log input (adb -e option)')
 parser.add_argument('-c', '--clear', dest='clear_logcat', action='store_true', help='Clear the entire log before running')
-parser.add_argument('-t', '--tag', dest='tag', action='append', help='Filter output by specified tag(s)')
-parser.add_argument('-i', '--ignore-tag', dest='ignored_tag', action='append', help='Filter output by ignoring specified tag(s)')
+parser.add_argument('-t', '--tag', dest='tag', metavar='TAG', action='append', type=str, help='Filter output by specified tag(s)')
+parser.add_argument('--ignore-tag', dest='ignored_tag', metavar='TAG', action='append', type=str, help='Filter output by ignoring specified tag(s)')
 parser.add_argument('-v', '--version', action='version', version='%(prog)s ' + __version__, help='Print the version number and exit')
 parser.add_argument('-a', '--all', dest='all', action='store_true', default=False, help='Print all log messages')
-parser.add_argument('-r', '--regex', dest='regex', type=str, help='Print only when matches REGEX and REGEX is regular expression')
+parser.add_argument('-r', '--regex', dest='regex', type=str, action='append', help='Print REGEX matches')
+parser.add_argument('--ignore-regex', dest='ignore_regex', metavar='REGEX', type=str, action='append', help='Don\'t print REGEX matches')
 parser.add_argument('--time', dest='time', action='store_true', default=False, help='Show timestamps')
-parser.add_argument('-x', '--exclude-level', dest='exclude_level', type=str, help='Exclude specific log levels (VDIWEF)')
-parser.add_argument('--include-level', dest='include_level', type=str, default='VDIWEF', help='Show specific log levels (VDIWEF)')
+parser.add_argument('--exclude-level', choices=LOG_LEVELS, dest='exclude_level', type=str, action='append', help='Exclude specific log level(s)')
+parser.add_argument('--include-level', choices=LOG_LEVELS, dest='include_level', type=str, action='append', default='VDIWEF', help='Show specific log level(s)')
+#parser.add_argument('--buffer', dest='buffer', type=str, action='append', help='Select alternative logcat buffers')
+parser.add_argument('--tid', dest='tid', action='store_true', help='Show thread IDs (TID)')
 
 args = parser.parse_args()
 
@@ -100,9 +107,9 @@ named_processes = map(lambda package: package if package.find(":") != len(packag
 tag_width = args.tag_width
 
 header_size = tag_width + 1 + 3 + 1 # space, level, space
-#header_size += 4 + 1 # p/t id?
+header_size += 1 + 5 + 2 # space, 5 digit tid, 2 spaces
 if args.time == True:
-  header_size += 12 + 1 # time, space
+  header_size += 5 + 1 + 12 + 1 # time, space
 
 stdout_isatty = sys.stdout.isatty()
 
@@ -134,22 +141,11 @@ def indent_wrap(message):
   message = message.replace('\t', '    ')
   wrap_area = width - header_size
   messagebuf = ''
-  #current = 0
-  #if len(message) > wrap_area:
   lines = textwrap.wrap(message, wrap_area)
   messagebuf += textwrap.dedent(lines[0])
   for line in lines[1:]:
     messagebuf += '\n'
     messagebuf += ' ' * header_size + textwrap.dedent(line)
-  #else:
-  #  return message
-  #while current < len(message): # 115
-  #  next = min(current + wrap_area, len(message))
-  #  messagebuf += message[current:next]
-  #  if next < len(message):
-  #    messagebuf += '\r\n'
-  #    messagebuf += ' ' * header_size
-  #  current = next
   return messagebuf
 
 def indent_wrap_proc(message):
@@ -158,25 +154,10 @@ def indent_wrap_proc(message):
   message = message.replace('\t', '    ')
   wrap_area = width - header_size
   messagebuf = ''
-  #current = 0
   if len(message) > wrap_area:
     messagebuf += '\n'.join(map(lambda x : x.rjust(width), textwrap.wrap(message, width)))
   else:
     messagebuf += ' ' * header_size + textwrap.dedent(message)
-  #lines = textwrap.wrap(message, wrap_area)
-  #for line in lines:
-    #messagebuf += '\n'
-    #messagebuf += ' ' * header_size + textwrap.dedent(line)
-  #messagebuf += '\n'
-  #else:
-  #  return message
-  #while current < len(message): # 115
-  #  next = min(current + wrap_area, len(message))
-  #  messagebuf += message[current:next]
-  #  if next < len(message):
-  #    messagebuf += '\r\n'
-  #    messagebuf += ' ' * header_size
-  #  current = next
   return messagebuf
 
 LAST_USED = [RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN]
@@ -202,6 +183,13 @@ def allocate_color(tag):
     LAST_USED.append(color)
   return color
 
+def allocate_tid_color(tid):
+  if tid in tid_color_dict:
+    return tid_color_dict[tid]
+  else:
+    tid_color_dict[tid] = len(tid_color_dict)
+    return tid_color_dict[tid]
+
 RULES = {
   # StrictMode policy violation; ~duration=319 ms: android.os.StrictMode$StrictModeDiskWriteViolation: policy=31 violation=1
   re.compile(r'^(StrictMode policy violation)(; ~duration=)(\d+ ms)')
@@ -218,28 +206,30 @@ if args.color_gc:
 
 TAGTYPES = {
   'V': colorize(' V ', fg=WHITE, bg=BLACK),
-  'D': colorize(' D ', fg=BLACK, bg=BLUE),
+  'D': colorize(' D ', fg=WHITE, bg=BLUE),
   'I': colorize(' I ', fg=BLACK, bg=GREEN),
   'W': colorize(' W ', fg=BLACK, bg=YELLOW),
-  'E': colorize(' E ', fg=BLACK, bg=RED),
-  'F': colorize(' F ', fg=BLACK, bg=RED),
+  'E': colorize(' E ', fg=WHITE, bg=RED),
+  'F': colorize(' F ', fg=WHITE, bg=RED),
 }
 
-PID_LINE = re.compile(r'^\w+\s+(\w+)\s+\w+\s+\w+\s+\w+\s+\w+\s+\w+\s+\w\s([\w|\.|\/]+)$')
+PID_LINE = re.compile(r'^.*\w+\s+(\w+)\s+\w+\s+\w+\s+\w+\s+\w+\s+\w+\s+\w\s([\w|\.|\/]+)$')
 PID_START = re.compile(r'^.*: Start proc ([a-zA-Z0-9._:]+) for ([a-z]+ [^:]+): pid=(\d+) uid=(\d+) gids=(.*)$')
 PID_START_5_1 = re.compile(r'^.*: Start proc (\d+):([a-zA-Z0-9._:]+)/([a-z0-9]+) for (.*) .*/(.*)\}$')
-PID_START_DALVIK = re.compile(r'^E/dalvikvm\(\s*(\d+)\): >>>>> ([a-zA-Z0-9._:]+) \[ userId:0 \| appId:(\d+) \]$')
+PID_START_DALVIK = re.compile(r'^.*E/dalvikvm\(\s*(\d+)\): >>>>> ([a-zA-Z0-9._:]+) \[ userId:0 \| appId:(\d+) \]$')
 PID_KILL  = re.compile(r'^.*Killing (\d+):([a-zA-Z0-9._:]+).*$')
-PID_LEAVE = re.compile(r'^No longer want ([a-zA-Z0-9._:]+) \(pid (\d+)\): .*$')
-PID_DEATH = re.compile(r'^Process ([a-zA-Z0-9._:]+) \(pid (\d+)\) has died.?$')
-LOG_LINE  = re.compile(r'^[0-9-]+ ([0-9:.]+) ([A-Z])/(.+?)\( *(\d+)\): (.*?)$')
+PID_LEAVE = re.compile(r'^.*No longer want ([a-zA-Z0-9._:]+) \(pid (\d+)\): .*$')
+PID_DEATH = re.compile(r'^.*Process ([a-zA-Z0-9._:]+) \(pid (\d+)\) has died.?$')
+#LOG_LINE  = re.compile(r'^.*[0-9-]+ ([0-9:.]+) ([A-Z])/(.+?)\( *(\d+)\): (.*?)$')
+LOG_LINE_PREFIX = r'^(\d+-\d+\s+\d+:\d+:\d+\.\d+)\s+(\d+)\s+(\d+)\s+?'
+LOG_LINE  = re.compile(LOG_LINE_PREFIX + r'([A-Z])\s+(.+?): (.*?)$')
 BUG_LINE  = re.compile(r'.*nativeGetEnabledTags.*')
-BACKTRACE_LINE = re.compile(r'^#(.*?)pc\s(.*?)$')
+BACKTRACE_LINE = re.compile(r'^.*#(.*?)pc\s(.*?)$')
 UID_KILL  = re.compile(r'^.*libprocessgroup.*uid (\d+).*pid (\d+).* (\d+ms)$')
 
 adb_command = base_adb_command[:]
 adb_command.append('logcat')
-adb_command.extend(['-v', 'time'])
+adb_command.extend(['-v', 'threadtime'])
 if args.regex:
   adb_command.extend(['-e', args.regex])
 
@@ -260,12 +250,14 @@ class FakeStdinProcess():
     return None
 
 if sys.stdin.isatty():
-  adb = subprocess.Popen(adb_command, stdin=PIPE, stdout=PIPE)
+  adb = subprocess.Popen(adb_command, stdin=PIPE, stdout=PIPE, stderr=PIPE)
 else:
   adb = FakeStdinProcess()
 pids = set()
 last_tag = None
+last_tid = None
 app_pid = None
+tid_color_dict = {}
 
 def match_packages(token):
   if len(package) == 0:
@@ -328,11 +320,16 @@ def tag_in_tags_regex(tag, tags):
 
 ps_command = base_adb_command + ['shell', 'ps']
 ps_pid = subprocess.Popen(ps_command, stdin=PIPE, stdout=PIPE, stderr=PIPE)
-tag_widthe = 0
+
+# suppresses tracebacks on script termination
+def interuppt_handler(signum, frame):
+  sys.exit(-2)
+signal.signal(signal.SIGINT, interuppt_handler)
+
 while True:
   try:
     line = ps_pid.stdout.readline().decode('utf-8', 'replace').strip()
-  except KeyboardInterrupt:
+  except (KeyboardInterrupt, SystemExit):
     break
   if len(line) == 0:
     break
@@ -349,7 +346,7 @@ while adb.poll() is None:
   try:
     #exclude_pattern = r'\s+([i])\s+'
     line = adb.stdout.readline().decode('utf-8', 'replace').strip()
-  except KeyboardInterrupt:
+  except (KeyboardInterrupt, SystemExit):
     break
   if len(line) == 0:
     break
@@ -362,7 +359,7 @@ while adb.poll() is None:
   if log_line is None:
     continue
 
-  time, level, tag, owner, message = log_line.groups()
+  time, owner, tid, level, tag, message = log_line.groups()
   tag = tag.strip()
   start = parse_start_proc(line)
   if start:
@@ -372,8 +369,8 @@ while adb.poll() is None:
 
       app_pid = line_pid
 
-      proc_header_left = ' CREATED:'
-      proc_header_right = '%s' % (line_gids)
+      proc_header_left = ' PROCESS CREATED!'
+      proc_header_right = '%s :TYPE' % (line_gids)
       proc_header_left_length = len(proc_header_left)
       proc_header_right_length = len(proc_header_right)
       proc_header_mid_length = header_size - proc_header_left_length - proc_header_right_length
@@ -388,38 +385,50 @@ while adb.poll() is None:
       linebuf  = '\n'
       linebuf += colorize('%s' % proc_header_left, fg=BLACK, bg=WHITE)
       linebuf += colorize(' ' * (proc_header_mid_length - 2), bg=WHITE)
-      linebuf += colorize('%s ' % (line_gids.upper()), fg=RED, bg=WHITE)
-      linebuf += '\n'
-      linebuf += proc_body_left + '/' + proc_body_right
+      linebuf += colorize('%s' % (line_gids.upper()), fg=RED, bg=WHITE)
+      linebuf += colorize(' :TYPE ', fg=BLACK, bg=WHITE)
+      #linebuf += '\n'
+      linebuf += ' '
+      linebuf += indent_wrap(proc_body_left)
       linebuf += '\n'
       linebuf += colorize(' PID: ', fg=BLACK, bg=WHITE)
       linebuf += colorize('%s' % line_pid, fg=RED, bg=WHITE)
       linebuf += colorize(' ' * (proc_footer_mid_length - 1), bg=WHITE)
       linebuf += colorize('%s' % line_uid, fg=RED, bg=WHITE)
       linebuf += colorize(' :USER ', fg=BLACK, bg=WHITE)
+      linebuf += ' '
+      linebuf += indent_wrap(proc_body_right)
       linebuf += '\n'
       print(linebuf)
-      last_tag = None # Ensure next log gets a tag printed
+      # Ensure next log gets a tag/tid printed
+      last_tag = None 
+      last_tid = None
+      tid_color_dict = {}
 
   dead_pid, dead_pname = parse_death_activity_mgr(tag, message)
   if dead_pid:
     pids.remove(dead_pid)
     dead_header = ' PROCESS ENDED:'
     dead_header_length = len(dead_header)
-    dead_footer = ' PID: %s' % (dead_pid)
+    dead_footer = 'PID: %s ' % (dead_pid)
     dead_footer_length = len(dead_footer)
     linebuf  = '\n'
     #linebuf += colorize(' ' * (header_size - 1), bg=RED)
-    linebuf += colorize(' PROCESS ENDED:', fg=WHITE, bg=RED)
-    linebuf += colorize(' ' * (header_size - dead_header_length - 1), bg=RED)
-    linebuf += '\n'
-    linebuf += '%s' % (dead_pname)
-    linebuf += '\n'
+    linebuf += colorize(' PROCESS ENDED!', fg=WHITE, bg=RED)
+    linebuf += colorize(' ' * (header_size - dead_header_length - dead_footer_length - 1), bg=RED)
     linebuf += colorize('%s' % (dead_footer), fg=WHITE, bg=RED)
-    linebuf += colorize(' ' * (header_size - dead_footer_length - 1), bg=RED)
+    #linebuf += '\n'
+    linebuf += ' '
+    linebuf += indent_wrap('%s' % (dead_pname))
     linebuf += '\n'
+    #linebuf += colorize('%s' % (dead_footer), fg=WHITE, bg=RED)
+    #linebuf += colorize(' ' * (header_size - dead_footer_length - 1), bg=RED)
+    #linebuf += '\n'
     print(linebuf)
-    last_tag = None # Ensure next log gets a tag printed
+    # Ensure next log gets a tag/tid printed
+    last_tag = None 
+    last_tid = None
+    tid_color_dict = {}
 
   # Make sure the backtrace is printed after a native crash
   if tag == 'DEBUG':
@@ -439,16 +448,22 @@ while adb.poll() is None:
   
   linebuf = ''
 
+  
+  if args.tid:
+    # still unsure why some TIDs dont get colored
+    tid_dict = {1:5,2:4,3:3,4:2,5:1}
+    last_tid = tid
+    tid_length = len(tid)
+    color = allocate_tid_color(tid)
+    linebuf += colorize(' %s' % (tid), bg=color)
+    linebuf += colorize(' ' * tid_dict[tid_length], bg=color)
+    linebuf += ' '
+
   if tag_width > 0:
     # right-align tag title and allocate color if needed
     if tag != last_tag or args.always_tags:
       last_tag = tag
       color = allocate_color(tag)
-      #tag_widthe = len(tag)
-      #if tag_widthe >= tag_width:
-      #  tag_width = len(tag)
-      #else:
-      #  tag_width = tag_widthe
       tag = tag[-tag_width:].rjust(tag_width)
       linebuf += colorize(tag, fg=color)
     else:

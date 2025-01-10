@@ -28,13 +28,14 @@ import sys
 import re
 import textwrap
 import subprocess
+from datetime import datetime
 from subprocess import PIPE
 
 __version__ = '3.1.1'
 
 LOG_LEVELS = 'VDIWEF'
 LOG_LEVELS_MAP = dict([(LOG_LEVELS[i], i) for i in range(len(LOG_LEVELS))])
-#BUFFER = ['radio', 'events', 'main', 'system', 'crash', 'all', 'default']
+BUFFER = ['radio', 'events', 'main', 'system', 'crash', 'all', 'default', 'kernel', 'security']
 formatter = lambda prog: argparse.HelpFormatter(prog,max_help_position=60)
 parser = argparse.ArgumentParser(formatter_class=formatter,description='Advanced ADB logcat filter')
 #parser = argparse.ArgumentParser(description='Filter logcat by package name')
@@ -55,9 +56,9 @@ parser.add_argument('-a', '--all', dest='all', action='store_true', default=Fals
 parser.add_argument('-r', '--regex', dest='regex', type=str, action='append', help='Print REGEX matches')
 parser.add_argument('--ignore-regex', dest='ignore_regex', metavar='REGEX', type=str, action='append', help='Don\'t print REGEX matches')
 parser.add_argument('--time', dest='time', action='store_true', default=False, help='Show timestamps')
-parser.add_argument('--exclude-level', choices=LOG_LEVELS, dest='exclude_level', type=str, action='append', help='Exclude specific log level(s)')
-parser.add_argument('--include-level', choices=LOG_LEVELS, dest='include_level', type=str, action='append', default='VDIWEF', help='Show specific log level(s)')
-#parser.add_argument('--buffer', dest='buffer', type=str, action='append', help='Select alternative logcat buffers')
+parser.add_argument('--exclude-level', choices=LOG_LEVELS, dest='exclude_level', type=str, help='Exclude specific log level(s)')
+parser.add_argument('--include-level', choices=LOG_LEVELS, dest='include_level', type=str, default='VDIWEF', help='Show specific log level(s)')
+parser.add_argument('--buffer', dest='buffer', choices=BUFFER, type=str, default='all', help='Select alternative logcat buffers')
 parser.add_argument('--tid', dest='tid', action='store_true', help='Show thread IDs (TID)')
 
 args = parser.parse_args()
@@ -107,9 +108,9 @@ named_processes = map(lambda package: package if package.find(":") != len(packag
 tag_width = args.tag_width
 
 header_size = tag_width + 1 + 3 + 1 # space, level, space
-header_size += 1 + 5 + 2 # space, 5 digit tid, 2 spaces
+header_size += 1 + 1 + 5 + 1 + 1 # space, colored space, 5 digit tid, colored space, space
 if args.time == True:
-  header_size += 5 + 1 + 12 + 1 # time, space
+  header_size += 6 + 1 + 12 + 1 # time, space
 
 stdout_isatty = sys.stdout.isatty()
 
@@ -144,6 +145,7 @@ def indent_wrap(message):
   lines = textwrap.wrap(message, wrap_area)
   messagebuf += textwrap.dedent(lines[0])
   for line in lines[1:]:
+  #for line in lines:
     messagebuf += '\n'
     messagebuf += ' ' * header_size + textwrap.dedent(line)
   return messagebuf
@@ -182,13 +184,6 @@ def allocate_color(tag):
     LAST_USED.remove(color)
     LAST_USED.append(color)
   return color
-
-def allocate_tid_color(tid):
-  if tid in tid_color_dict:
-    return tid_color_dict[tid]
-  else:
-    tid_color_dict[tid] = len(tid_color_dict)
-    return tid_color_dict[tid]
 
 RULES = {
   # StrictMode policy violation; ~duration=319 ms: android.os.StrictMode$StrictModeDiskWriteViolation: policy=31 violation=1
@@ -232,6 +227,7 @@ adb_command.append('logcat')
 adb_command.extend(['-v', 'threadtime'])
 if args.regex:
   adb_command.extend(['-e', args.regex])
+adb_command.extend(['--buffer', args.buffer])
 
 # Clear log before starting logcat
 if args.clear_logcat:
@@ -450,13 +446,14 @@ while adb.poll() is None:
 
   
   if args.tid:
-    # still unsure why some TIDs dont get colored
-    tid_dict = {1:5,2:4,3:3,4:2,5:1}
+    tid_space_dict = {1:5,2:4,3:3,4:2,5:1} # assuming 5 digits
+    # [1:RED, 2:GREEN, 3:YELLOW, 4:BLUE, 5:MAGENTA, 6:CYAN]
+    tid_fg = {1:BLACK, 2:BLACK, 3:BLACK, 4:WHITE, 5:WHITE, 6:BLACK}
     last_tid = tid
     tid_length = len(tid)
-    color = allocate_tid_color(tid)
-    linebuf += colorize(' %s' % (tid), bg=color)
-    linebuf += colorize(' ' * tid_dict[tid_length], bg=color)
+    color = allocate_color(tid)
+    linebuf += colorize(' %s ' % (tid), fg=tid_fg[color], bg=color)
+    linebuf += ' ' * tid_space_dict[tid_length]
     linebuf += ' '
 
   if tag_width > 0:
@@ -476,8 +473,10 @@ while adb.poll() is None:
   else:
     linebuf += ' ' + level + ' '
   linebuf += ' '
+
   if args.time == True:
-    linebuf = time + ' ' + linebuf
+    time = datetime.strptime(time, '%m-%d %H:%M:%S.%f')
+    linebuf = datetime.strftime(time, '%d-%b %H:%M:%S.%f')[:-3] + ' ' + linebuf
 
   # format tag message using rules
   for matcher in RULES:

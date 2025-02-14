@@ -510,7 +510,7 @@ while adb.poll() is None:
     if g_regex is not None:
       continue
     else:
-      print(linebuf)
+      pass
 
-  #print(linebuf)
+  print(linebuf)
   

@@ -226,7 +226,11 @@ adb_command = base_adb_command[:]
 adb_command.append('logcat')
 adb_command.extend(['-v', 'threadtime'])
 if args.regex:
-  adb_command.extend(['-e', args.regex])
+  regexx = []
+  for item in args.regex:
+    regexx.extend(item.split())
+  regexx = "|".join(regexx)
+  adb_command.extend(['--regex', regexx])
 adb_command.extend(['--buffer', args.buffer])
 
 # Clear log before starting logcat

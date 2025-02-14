@@ -493,12 +493,24 @@ while adb.poll() is None:
     if level in exc_level:
       continue
     else:
-      print(linebuf)
+      pass
   if args.include_level:
     if level in inc_level:
-      print(linebuf)
+      pass
     else:
       continue
+
+  if args.ignore_regex:
+    ig_regex = []
+    for item in args.ignore_regex:
+      ig_regex.extend(item.split())
+    ig_regex = "|".join(ig_regex)
+    igs_regex = re.compile(r'^.*({})'.format(ig_regex), re.IGNORECASE)
+    g_regex = igs_regex.match(linebuf)
+    if g_regex is not None:
+      continue
+    else:
+      print(linebuf)
 
   #print(linebuf)
   
